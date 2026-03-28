@@ -1,0 +1,81 @@
+# CXR LoRA Training Configuration
+# Minimal LoRA config tuned for 12GB VRAM
+# Dataset: ChestX-Det (13 CXR pathology categories)
+
+# Model settings
+model:
+  name: "facebook/sam3"
+  cache_dir: null
+
+# LoRA settings — minimal config (decoder only, ~500K params)
+lora:
+  rank: 4
+  alpha: 8
+  dropout: 0.1
+
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "out_proj"
+
+  # Only adapt decoder — keeps VRAM low
+  apply_to_vision_encoder: false
+  apply_to_text_encoder: false
+  apply_to_geometry_encoder: false
+  apply_to_detr_encoder: false
+  apply_to_detr_decoder: true
+  apply_to_mask_decoder: true
+
+# Training settings — conservative for 12GB VRAM
+training:
+  train_data_path: "data/train"
+  val_data_path: "data/val"
+  batch_size: 1
+  num_workers: 2
+
+  # Optimization
+  learning_rate: 5e-5
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1e-8
+  max_grad_norm: 1.0
+
+  # Schedule
+  num_epochs: 30
+  warmup_steps: 200
+  lr_scheduler: "cosine"
+
+  # Logging
+  logging_steps: 10
+  eval_steps: 500
+  save_steps: 500
+  save_total_limit: 3
+
+  # Mixed precision — saves ~40% VRAM
+  mixed_precision: "fp16"
+
+  # Simulate batch size 4 with gradient accumulation
+  seed: 42
+  gradient_accumulation_steps: 4
+
+# Output settings
+output:
+  output_dir: "outputs/sam3_lora_cxr"
+  logging_dir: "logs"
+  save_lora_only: true
+  push_to_hub: false
+  hub_model_id: null
+
+# Evaluation settings
+evaluation:
+  metric: "iou"
+  save_predictions: false
+  compute_metrics_during_training: true
+
+# Hardware settings
+hardware:
+  device: "cuda"
+  dataloader_pin_memory: true
+  use_compile: false
