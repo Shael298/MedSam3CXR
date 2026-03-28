@@ -1,18 +1,13 @@
 """
-Convert ChestX-Det dataset to the per-image JSON format
-expected by train_sam3_lora.py's SAM3Dataset.
+Convert ChestX-Det dataset to COCO format for train_sam3_lora_with_categories.py.
 
 ChestX-Det format (single JSON array):
   [{"file_name": "36346.png", "syms": ["Cardiomegaly", "Effusion"],
     "boxes": [[x1,y1,x2,y2], ...], "polygons": [[[x,y],...], ...]}, ...]
 
-SAM3Dataset expected format:
-  data/train/images/36346_cardiomegaly.png
-  data/train/annotations/36346_cardiomegaly.json
-    {"text_prompt": "cardiomegaly", "masks": [[...]], "bboxes": [[x1,y1,x2,y2]]}
-
-Each image-category pair becomes a separate training example because
-SAM3Dataset expects one text_prompt per annotation file.
+COCO format output:
+  _annotations.coco.json with categories, images, and annotations
+  (polygons as segmentation, boxes converted from xyxy to xywh)
 
 Usage:
     python convert_chestxdet.py \
@@ -32,8 +27,7 @@ import os
 import shutil
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 # Map ChestX-Det category names to SAM3 text prompts.
@@ -55,28 +49,27 @@ CATEGORY_TO_PROMPT = {
 }
 
 
-def polygon_to_mask(polygon: list[list[int]], width: int, height: int) -> list[list[int]]:
-    """Convert a polygon contour to a binary mask (list of lists of 0/1)."""
-    img = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(img)
-    flat_points = [(p[0], p[1]) for p in polygon]
-    if len(flat_points) >= 3:
-        draw.polygon(flat_points, fill=1)
-    mask = np.array(img).tolist()
-    return mask
-
-
 def convert(annotations_path: str, images_dir: str, output_dir: str) -> None:
     with open(annotations_path, "r") as f:
         entries = json.load(f)
 
     out_images = Path(output_dir) / "images"
-    out_annotations = Path(output_dir) / "annotations"
     out_images.mkdir(parents=True, exist_ok=True)
-    out_annotations.mkdir(parents=True, exist_ok=True)
-
     images_dir = Path(images_dir)
-    total = 0
+
+    # Build COCO category list from the prompt mapping.
+    # Use the SAM3 prompt as the category name so training uses
+    # the same text prompts as inference.
+    prompt_to_cat_id: dict[str, int] = {}
+    coco_categories = []
+    for idx, prompt in enumerate(sorted(set(CATEGORY_TO_PROMPT.values())), start=1):
+        prompt_to_cat_id[prompt] = idx
+        coco_categories.append({"id": idx, "name": prompt})
+
+    coco_images = []
+    coco_annotations = []
+    image_id = 0
+    ann_id = 0
     skipped = 0
 
     for entry in entries:
@@ -93,56 +86,72 @@ def convert(annotations_path: str, images_dir: str, output_dir: str) -> None:
             skipped += 1
             continue
 
-        # Get image dimensions for polygon-to-mask conversion.
+        # Get image dimensions.
         with Image.open(src_image) as img:
             width, height = img.size
 
-        # Group annotations by category so each training example
-        # has one text_prompt with all its masks/boxes.
-        category_groups: dict[str, dict] = {}
+        # Copy image to output directory.
+        dst_image = out_images / file_name
+        if not dst_image.exists():
+            shutil.copy2(src_image, dst_image)
+
+        coco_images.append({
+            "id": image_id,
+            "file_name": file_name,
+            "width": width,
+            "height": height,
+        })
+
         for sym, box, polygon in zip(syms, boxes, polygons):
             prompt = CATEGORY_TO_PROMPT.get(sym)
             if prompt is None:
                 continue
-            if prompt not in category_groups:
-                category_groups[prompt] = {"bboxes": [], "masks": []}
-            category_groups[prompt]["bboxes"].append(box)
-            category_groups[prompt]["masks"].append(
-                polygon_to_mask(polygon, width, height)
-            )
 
-        stem = Path(file_name).stem
+            cat_id = prompt_to_cat_id[prompt]
 
-        for prompt, data in category_groups.items():
-            # Sanitize prompt for filename.
-            safe_prompt = prompt.replace(" ", "_")
-            example_name = f"{stem}_{safe_prompt}"
+            # Convert box from [x1, y1, x2, y2] to COCO [x, y, w, h].
+            x1, y1, x2, y2 = box
+            coco_box = [x1, y1, x2 - x1, y2 - y1]
 
-            # Copy image with unique name.
-            dst_image = out_images / f"{example_name}.png"
-            if not dst_image.exists():
-                shutil.copy2(src_image, dst_image)
+            # Flatten polygon [[x,y],[x,y],...] to [x,y,x,y,...] for COCO.
+            flat_seg = []
+            for point in polygon:
+                flat_seg.extend(point)
 
-            # Write annotation JSON.
-            annotation = {
-                "text_prompt": prompt,
-                "bboxes": data["bboxes"],
-                "masks": data["masks"],
-            }
-            ann_path = out_annotations / f"{example_name}.json"
-            with open(ann_path, "w") as f:
-                json.dump(annotation, f)
+            area = coco_box[2] * coco_box[3]
 
-            total += 1
+            coco_annotations.append({
+                "id": ann_id,
+                "image_id": image_id,
+                "category_id": cat_id,
+                "bbox": coco_box,
+                "segmentation": [flat_seg],
+                "area": area,
+                "iscrowd": 0,
+            })
+            ann_id += 1
 
-    print(f"Created {total} training examples in {output_dir}")
+        image_id += 1
+
+    coco_json = {
+        "categories": coco_categories,
+        "images": coco_images,
+        "annotations": coco_annotations,
+    }
+
+    out_path = Path(output_dir) / "_annotations.coco.json"
+    with open(out_path, "w") as f:
+        json.dump(coco_json, f)
+
+    print(f"Created COCO file at {out_path}")
+    print(f"  {len(coco_images)} images, {len(coco_annotations)} annotations, {len(coco_categories)} categories")
     if skipped:
-        print(f"Skipped {skipped} entries (image not found)")
+        print(f"  Skipped {skipped} entries (image not found)")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Convert ChestX-Det to SAM3 training format"
+        description="Convert ChestX-Det to COCO format for SAM3 training"
     )
     parser.add_argument(
         "--annotations", required=True,

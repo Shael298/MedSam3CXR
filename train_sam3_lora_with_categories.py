@@ -217,11 +217,13 @@ class SAM3TrainerWithCategories:
 
         # Build Model
         print("Building SAM3 model...")
+        repo_root = Path(__file__).resolve().parent
+        bpe_path = repo_root / "sam3" / "assets" / "bpe_simple_vocab_16e6.txt.gz"
         self.model = build_sam3_image_model(
             device=self.device.type,
             compile=False,
             load_from_HF=True,
-            bpe_path="sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+            bpe_path=str(bpe_path)
         )
 
         # Apply LoRA
