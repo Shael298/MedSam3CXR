@@ -80,6 +80,9 @@ class SAM3LoRAInference:
             nms_iou_threshold: IoU threshold for NMS (default: 0.5)
             device: Device to run on (default: "cuda")
         """
+        repo_root = Path(__file__).resolve().parent
+        bpe_path = repo_root / "sam3" / "assets" / "bpe_simple_vocab_16e6.txt.gz"
+
         # Load config
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -111,7 +114,7 @@ class SAM3LoRAInference:
             device=self.device.type,
             compile=False,
             load_from_HF=True,
-            bpe_path="sam3/assets/bpe_simple_vocab_16e6.txt.gz",
+            bpe_path=str(bpe_path),
             eval_mode=True
         )
 
