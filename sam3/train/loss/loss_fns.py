@@ -12,10 +12,16 @@ from sam3.model import box_ops
 
 from sam3.model.data_misc import interpolate
 
-from sam3.train.loss.sigmoid_focal_loss import (
-    triton_sigmoid_focal_loss,
-    triton_sigmoid_focal_loss_reduce,
-)
+try:
+    from sam3.train.loss.sigmoid_focal_loss import (
+        triton_sigmoid_focal_loss,
+        triton_sigmoid_focal_loss_reduce,
+    )
+    _TRITON_AVAILABLE = True
+except ImportError:
+    _TRITON_AVAILABLE = False
+    triton_sigmoid_focal_loss = None
+    triton_sigmoid_focal_loss_reduce = None
 from torch import nn
 
 from .mask_sampling import (
@@ -131,7 +137,7 @@ def sigmoid_focal_loss(
     gamma: float = 2,
     loss_on_multimask=False,
     reduce=True,
-    triton=True,
+    triton=_TRITON_AVAILABLE,
 ):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
