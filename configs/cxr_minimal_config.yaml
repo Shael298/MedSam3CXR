@@ -29,8 +29,9 @@ lora:
 
 # Training settings — conservative for 12GB VRAM
 training:
+  data_dir: "data"
   train_data_path: "data/train"
-  val_data_path: "data/val"
+  val_data_path: "data/valid"
   batch_size: 1
   num_workers: 2
 

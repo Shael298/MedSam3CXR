@@ -25,7 +25,7 @@ from tqdm import tqdm
 from sam3.model_builder import build_sam3_image_model
 from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object, FindQueryLoaded, InferenceMetadata
 from sam3.train.data.collator import collate_fn_api
-from sam3.train.loss.sam3_loss import SAM3Loss
+from sam3.train.loss.sam3_loss import Sam3LossWrapper as SAM3Loss
 
 from lora_layers import LoRAConfig, apply_lora_to_model, save_lora_weights, count_parameters
 
