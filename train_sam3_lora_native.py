@@ -110,12 +110,13 @@ def print_rank0(*args, **kwargs):
 
 class COCOSegmentDataset(Dataset):
     """Dataset class for COCO format segmentation data"""
-    def __init__(self, data_dir, split="train", max_annotations_per_image=10):
+    def __init__(self, data_dir, split="train", max_annotations_per_image=10, resolution=1008):
         """
         Args:
             data_dir: Root directory containing train/valid/test folders
             split: One of 'train', 'valid', 'test'
             max_annotations_per_image: Skip images with more annotations than this (saves VRAM)
+            resolution: Image resolution for training (lower = less VRAM)
         """
         self.data_dir = Path(data_dir)
         self.split = split
@@ -161,7 +162,7 @@ class COCOSegmentDataset(Dataset):
         print(f"  Annotations: {len(self.coco_data['annotations'])}")
         print(f"  Categories: {self.categories}")
 
-        self.resolution = 1008
+        self.resolution = resolution
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
@@ -906,10 +907,11 @@ class SAM3TrainerNative:
     def train(self):
         # Get data directory from config (should point to directory containing train/valid folders)
         data_dir = self.config["training"]["data_dir"]
+        resolution = self.config["training"].get("resolution", 768)
 
         # Load datasets using COCO format
-        print_rank0(f"\nLoading training data from {data_dir}...")
-        train_ds = COCOSegmentDataset(data_dir=data_dir, split="train")
+        print_rank0(f"\nLoading training data from {data_dir}... (resolution: {resolution})")
+        train_ds = COCOSegmentDataset(data_dir=data_dir, split="train", resolution=resolution)
 
         # Check if validation data exists
         has_validation = False
@@ -917,7 +919,7 @@ class SAM3TrainerNative:
 
         try:
             print_rank0(f"\nLoading validation data from {data_dir}...")
-            val_ds = COCOSegmentDataset(data_dir=data_dir, split="valid")
+            val_ds = COCOSegmentDataset(data_dir=data_dir, split="valid", resolution=resolution)
             if len(val_ds) > 0:
                 has_validation = True
                 print_rank0(f"Found validation data: {len(val_ds)} images")

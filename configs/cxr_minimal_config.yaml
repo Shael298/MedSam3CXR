@@ -32,8 +32,9 @@ training:
   data_dir: "data"
   train_data_path: "data/train"
   val_data_path: "data/valid"
+  resolution: 768
   batch_size: 1
-  num_workers: 2
+  num_workers: 0
 
   # Optimization
   learning_rate: 5e-5
