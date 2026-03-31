@@ -1043,61 +1043,68 @@ class SAM3TrainerNative:
             self.optimizer.zero_grad()
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", disable=not is_main_process())
             for step, batch_dict in enumerate(pbar):
-                input_batch = batch_dict["input"]
+                try:
+                    input_batch = batch_dict["input"]
 
-                # Move to device
-                input_batch = move_to_device(input_batch, self.device)
+                    # Move to device
+                    input_batch = move_to_device(input_batch, self.device)
 
-                # Forward pass with mixed precision
-                with autocast("cuda", enabled=self.use_amp):
-                    outputs_list = self.model(input_batch)
+                    # Forward pass with mixed precision
+                    with autocast("cuda", enabled=self.use_amp):
+                        outputs_list = self.model(input_batch)
 
-                    # Prepare targets for loss
-                    find_targets = [self._unwrapped_model.back_convert(target) for target in input_batch.find_targets]
+                        # Prepare targets for loss
+                        find_targets = [self._unwrapped_model.back_convert(target) for target in input_batch.find_targets]
 
-                    # Move targets to device
-                    for targets in find_targets:
-                        for k, v in targets.items():
-                            if isinstance(v, torch.Tensor):
-                                targets[k] = v.to(self.device)
+                        # Move targets to device
+                        for targets in find_targets:
+                            for k, v in targets.items():
+                                if isinstance(v, torch.Tensor):
+                                    targets[k] = v.to(self.device)
 
-                    # Add matcher indices to outputs (required by Sam3LossWrapper)
-                    with SAM3Output.iteration_mode(
-                        outputs_list, iter_mode=SAM3Output.IterMode.ALL_STEPS_PER_STAGE
-                    ) as outputs_iter:
-                        for stage_outputs, stage_targets in zip(outputs_iter, find_targets):
-                            stage_targets_list = [stage_targets] * len(stage_outputs)
-                            for outputs, targets in zip(stage_outputs, stage_targets_list):
-                                outputs["indices"] = self.matcher(outputs, targets)
+                        # Add matcher indices to outputs (required by Sam3LossWrapper)
+                        with SAM3Output.iteration_mode(
+                            outputs_list, iter_mode=SAM3Output.IterMode.ALL_STEPS_PER_STAGE
+                        ) as outputs_iter:
+                            for stage_outputs, stage_targets in zip(outputs_iter, find_targets):
+                                stage_targets_list = [stage_targets] * len(stage_outputs)
+                                for outputs, targets in zip(stage_outputs, stage_targets_list):
+                                    outputs["indices"] = self.matcher(outputs, targets)
 
-                                if "aux_outputs" in outputs:
-                                    for aux_out in outputs["aux_outputs"]:
-                                        aux_out["indices"] = self.matcher(aux_out, targets)
+                                    if "aux_outputs" in outputs:
+                                        for aux_out in outputs["aux_outputs"]:
+                                            aux_out["indices"] = self.matcher(aux_out, targets)
 
-                    # Compute loss (divide by accum_steps to average)
-                    loss_dict = self.loss_wrapper(outputs_list, find_targets)
-                    total_loss = loss_dict[CORE_LOSS_KEY] / accum_steps
+                        # Compute loss (divide by accum_steps to average)
+                        loss_dict = self.loss_wrapper(outputs_list, find_targets)
+                        total_loss = loss_dict[CORE_LOSS_KEY] / accum_steps
 
-                # Skip batch if loss is NaN or Inf
-                if not torch.isfinite(total_loss):
-                    print_rank0(f"  ⚠ Skipping batch {step} (loss={total_loss.item()}) — NaN/Inf detected")
+                    # Skip batch if loss is NaN or Inf
+                    if not torch.isfinite(total_loss):
+                        print_rank0(f"  ⚠ Skipping batch {step} — NaN/Inf loss")
+                        self.optimizer.zero_grad()
+                        continue
+
+                    # Backward with gradient scaling (accumulate gradients)
+                    self.scaler.scale(total_loss).backward()
+
+                    # Only update weights every accum_steps
+                    if (step + 1) % accum_steps == 0 or (step + 1) == len(train_loader):
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                        self.optimizer.zero_grad()
+
+                    # Track training loss (multiply back for logging)
+                    train_losses.append(total_loss.item() * accum_steps)
+                    pbar.set_postfix({"loss": total_loss.item() * accum_steps})
+
+                except (RuntimeError, ValueError) as e:
+                    print_rank0(f"  ⚠ Skipping batch {step} — error: {e}")
                     self.optimizer.zero_grad()
+                    torch.cuda.empty_cache()
                     continue
-
-                # Backward with gradient scaling (accumulate gradients)
-                self.scaler.scale(total_loss).backward()
-
-                # Only update weights every accum_steps
-                if (step + 1) % accum_steps == 0 or (step + 1) == len(train_loader):
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    self.optimizer.zero_grad()
-
-                # Track training loss (multiply back for logging)
-                train_losses.append(total_loss.item() * accum_steps)
-                pbar.set_postfix({"loss": total_loss.item() * accum_steps})
 
             # Calculate average training loss for this epoch
             avg_train_loss = sum(train_losses) / len(train_losses) if train_losses else 0.0
