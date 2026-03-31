@@ -110,11 +110,12 @@ def print_rank0(*args, **kwargs):
 
 class COCOSegmentDataset(Dataset):
     """Dataset class for COCO format segmentation data"""
-    def __init__(self, data_dir, split="train"):
+    def __init__(self, data_dir, split="train", max_annotations_per_image=10):
         """
         Args:
             data_dir: Root directory containing train/valid/test folders
             split: One of 'train', 'valid', 'test'
+            max_annotations_per_image: Skip images with more annotations than this (saves VRAM)
         """
         self.data_dir = Path(data_dir)
         self.split = split
@@ -140,10 +141,23 @@ class COCOSegmentDataset(Dataset):
                 self.img_to_anns[img_id] = []
             self.img_to_anns[img_id].append(ann)
 
+        # Filter out images with too many annotations (prevents OOM)
+        skipped = 0
+        if max_annotations_per_image is not None:
+            filtered_ids = []
+            for img_id in self.image_ids:
+                if len(self.img_to_anns.get(img_id, [])) <= max_annotations_per_image:
+                    filtered_ids.append(img_id)
+                else:
+                    skipped += 1
+            self.image_ids = filtered_ids
+
         # Load categories
         self.categories = {cat['id']: cat['name'] for cat in self.coco_data['categories']}
         print(f"Loaded COCO dataset: {split} split")
         print(f"  Images: {len(self.image_ids)}")
+        if skipped:
+            print(f"  Skipped: {skipped} images with >{max_annotations_per_image} annotations")
         print(f"  Annotations: {len(self.coco_data['annotations'])}")
         print(f"  Categories: {self.categories}")
 
