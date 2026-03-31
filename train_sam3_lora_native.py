@@ -1017,6 +1017,16 @@ class SAM3TrainerNative:
                 return obj
             return obj
 
+        # Gradient accumulation
+        accum_steps = self.config["training"].get("gradient_accumulation_steps", 1)
+        print_rank0(f"Gradient accumulation steps: {accum_steps} (effective batch size: {self.config['training']['batch_size'] * accum_steps})")
+
+        # Set seed for reproducibility
+        seed = self.config["training"].get("seed", 42)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+
         # Create output directory
         out_dir = Path(self.config["output"]["output_dir"])
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1030,8 +1040,9 @@ class SAM3TrainerNative:
             train_losses = []
 
             # Only show progress bar on rank 0
+            self.optimizer.zero_grad()
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", disable=not is_main_process())
-            for batch_dict in pbar:
+            for step, batch_dict in enumerate(pbar):
                 input_batch = batch_dict["input"]
 
                 # Move to device
@@ -1063,21 +1074,24 @@ class SAM3TrainerNative:
                                     for aux_out in outputs["aux_outputs"]:
                                         aux_out["indices"] = self.matcher(aux_out, targets)
 
-                    # Compute loss
+                    # Compute loss (divide by accum_steps to average)
                     loss_dict = self.loss_wrapper(outputs_list, find_targets)
-                    total_loss = loss_dict[CORE_LOSS_KEY]
+                    total_loss = loss_dict[CORE_LOSS_KEY] / accum_steps
 
-                # Backward with gradient scaling
-                self.optimizer.zero_grad()
+                # Backward with gradient scaling (accumulate gradients)
                 self.scaler.scale(total_loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
 
-                # Track training loss
-                train_losses.append(total_loss.item())
-                pbar.set_postfix({"loss": total_loss.item()})
+                # Only update weights every accum_steps
+                if (step + 1) % accum_steps == 0 or (step + 1) == len(train_loader):
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
+
+                # Track training loss (multiply back for logging)
+                train_losses.append(total_loss.item() * accum_steps)
+                pbar.set_postfix({"loss": total_loss.item() * accum_steps})
 
             # Calculate average training loss for this epoch
             avg_train_loss = sum(train_losses) / len(train_losses) if train_losses else 0.0
