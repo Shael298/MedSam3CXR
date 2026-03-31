@@ -1078,6 +1078,12 @@ class SAM3TrainerNative:
                     loss_dict = self.loss_wrapper(outputs_list, find_targets)
                     total_loss = loss_dict[CORE_LOSS_KEY] / accum_steps
 
+                # Skip batch if loss is NaN or Inf
+                if not torch.isfinite(total_loss):
+                    print_rank0(f"  ⚠ Skipping batch {step} (loss={total_loss.item()}) — NaN/Inf detected")
+                    self.optimizer.zero_grad()
+                    continue
+
                 # Backward with gradient scaling (accumulate gradients)
                 self.scaler.scale(total_loss).backward()
 
